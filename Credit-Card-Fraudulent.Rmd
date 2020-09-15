@@ -1,0 +1,348 @@
+---
+title: "Credit Card Fraud Detection"
+author: "Vidhya"
+date: "9/9/2020"
+output:
+  pdf_document: default
+  html_document: default
+  fig.caption: yes
+number_sections: yes
+---
+
+```{r setup, include=FALSE, message=FALSE, warning= F}
+library(tidyverse)
+library(readr)
+library(caret)
+library(corrplot)
+library(smotefamily)
+library(randomForest)
+library(MASS)
+library(rpart)
+library(rpart.plot)
+
+knitr::opts_chunk$set(echo = F,cache = T,eval = T)
+
+```
+```{r, include=F,eval=T, warning= F, message= FALSE}
+#source('credit_card.R', local = knitr::knit_global())
+sys.source("~/Data_Science/HarvardX-DS/credit_card.R", envir = knitr::knit_global())
+```
+
+## Introduction
+
+This project proposes to build an algorithm that can detect credit card fraudulent transactions. The data about credit card fraudulent hints that the number of fraud transactions is rising, so there is an urgent necessity to develop a new and powerful method for detection. 
+
+The dataset used for this Machine Learning Projet is from Kaggle [credit_card](https://www.kaggle.com/mlg-ulb/creditcardfraud). The datasets comprise transactions made by credit cards in September 2013 by European cardholders. This dataset exhibits transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions.
+Using this we will be trying different methods to develop a model that could predict whether a transaction is fraudulent or not.
+
+The structuring of the report is as follows: starts with the data exploration and is followed by attempting different methods on the dataset. Finally analyzes the accuracy of all the models and detection of the most suitable model with optimum accuracy for fraudulent detection.
+
+## Data Exploration
+
+In this section, we will explore the data that is contained in the credit_card data frame. From an initial exploration, it is clear that the "credit card" data is highly unbalanced which means the class representing frauds account for only 0.17% of all transaction. The below table shows the proportion of not Fraud(class 0) and Fraud(class 1).
+```{r,fig.align="center", fig.width=4, fig.height=4, echo=FALSE, fig.cap= "Table of Class Column"}
+
+#table(credit_card$Class)
+prop <- prop.table(table(credit_card$Class))
+knitr::kable(prop)
+```
+
+Another major fact about the dataset is that it contains only numerical input variables which are the 
+result of PCA transformation. The glimpse of the first few rows of the dataset is shown below:
+```{r}
+head(credit_card)
+#knitr::kable(head(credit_card))
+```
+The original features and more details are restricted due to confidential issues. The features V1-V28 are the principal components obtained with PCA and the Amount, Time features haven't been transformed. The Class feature gives information about a transaction is Fraudulent or not. This is our desired outcome column.
+
+The Amount feauter seems to have long tail. To prove this assumption we could plot histogram of the variables.
+```{r,fig.align="center", fig.width=3, fig.height=3,eval=T, fig.cap= "Histogram of Amount"}
+
+credit_card %>%
+  ggplot(aes(Amount)) +
+  geom_histogram(bins = 10,color = "white") +
+    ggtitle("Distribution of Amount") +
+    xlab("Amount") +
+    ylab("Number of Amount")
+
+
+```
+
+The Histogram proves that the number of variables has a very long tail and most of the transactions are around zero levels. So we could zoom in the histogram with values below 100.
+```{r,fig.align="center",fig.cap= "Histogram of Amount below 100" ,fig.width=3, fig.height=3}
+amount_filter <- credit_card %>% 
+  filter(Amount<=100) 
+
+  amount_filter %>% 
+          ggplot(aes(Amount)) +
+          geom_histogram(bins = 10,color = "white") + 
+          ggtitle("Distribution of Amount") +
+           xlab("Amount") +
+            ylab("Number of Amount") 
+```
+The Summary of the Amount Column is given below.
+```{r}
+amount <- summary(credit_card$Amount)
+amount
+```
+ 
+```{r,echo=FALSE, eval=F}
+length(credit_card$Amount)
+max(credit_card$Amount)
+mean(credit_card$Amount <=5)
+mean(credit_card$Amount <=100)
+mean(credit_card$Amount <= 200)
+```
+ 
+Even though the length of the Amount is around 25000, most of the transactions are below 100. There are approximately 25% amounts are below 5, 80% of them are below 100, and around 90% of the amounts are within 200. This explicitly proves that the Amount feature has a long tail.
+
+The time variable shows the amount of Time between transactions.
+```{r,fig.align="center", fig.width=3, fig.height=3,eval=T, fig.cap= "Histogtram of Time Column"}
+
+credit_card %>% 
+  ggplot(aes(Time)) +
+  geom_histogram(bins = 10,color = "white") + 
+    ggtitle("Distribution of Time") +
+    xlab("Time") +
+    ylab("Number of Time") 
+```
+
+
+This Distribution of Time doesn't give much information. Also, there is seems to not to have no relationship between Amount and Time.
+```{r, eval=T}
+corr <- cor(credit_card$Time, credit_card$Amount)
+```
+The correlation between Amount and time has been calculated and it turns out to be  -0.01059 which strongly confirms the intuition.The Correlation between the principle component and other features would be an interesting pot to visualize.
+ 
+```{r,fig.align="center", fig.width=12,fig.cap= 'Correlation plot of the dataset', fig.height=8,eval=T, warning=FALSE, message=FALSE}
+library(GGally)
+library(caret)
+ggcorr(credit_card)
+
+
+```
+This plot shows there is some correlation between the principal components and other features.
+ 
+### Data Manipulation
+ 
+ Since the amount feature has a long tail it would be helpful to scale this column. With the help of scaling the data is structured according to a specified range. Therefore there would be no extreme values in the dataset that might interfere with the functioning of the model.
+ 
+ We would be using the scale() function to scale the Amount component of the data set. This function will calculate the mean and standard deviation of the entire vector, then scale each element by those values by subtracting the mean and dividing by the sd.
+ 
+The summary of the Amount feature in the scaled data is:
+```{r}
+summary(credit_card$Amount)
+```
+
+## Method and Analysis
+This section details data manipulation carried out for the modeling and analysis of various models working on the dataset. Here we used Logistic regression, Linear Discriminant Analysis, and Random Forest for the training of the data.
+
+### Model Training
+
+For the construction of the model the dataset has to be divided to a train set and test set. Here we used CreateDataPartition() function from caret library and partitioned creditcard data to train_set with 80% of the data and test data with 20% data.
+```{r, echo=FALSE,eval=TRUE}
+set.seed(1234)
+test_index <- createDataPartition(y=credit_card$Class, p = 0.2, times = 1, list = F)
+
+test_set <- credit_card[test_index,]
+train_set <- credit_card[-test_index,]
+
+```
+
+**1. Linear Discriminant Analysis(LDA)**
+
+The very first model used for testing is LDA. an LDA finds an equation that splits the classes from each other very well. We used LDA to find the linear function to help separate the fraudulent Class from the non-fraudulent Class.
+
+First trained the train_data set using LDA method and then test_set data is used for testing the Accuracy of the prediction.
+```{r,echo=FALSE,eval=TRUE}
+lda_CM
+```
+
+The Accuracy of the model is 0.9994  and the Kappa is 0.81. One could think that this high accuracy we achieved is due to the overfitting of the data. But this high accuracy is because of the unbalanced  data. The table below shows the number of Class 1s and Class 0s in the test data.
+```{r}
+test <- table(test_set$Class)
+knitr::kable(head(test))
+```
+
+Looking at our test data we could see that 56863 transactions are legitimate and 99 are fraudulent. So even if we predict all the cases as legitimate we would have got only 99 as the wrong prediction. If we look at our confusion Matrix, we can see that we only got 34 predictions wrong, with 10 false-positive and 24 false negatives. Making 34 wrong predictions than 99 wrong is an improvement but we have to consider the importance of sensitivity and specificity when it comes to real-world problems.
+
+There are four ways of addressing class imbalance problems:
+
+1. Synthesis of new minority class instances
+2. Over-sampling of minority class
+3. under-sampling of the majority class
+4. tweak the cost function to make misclassification of minority instances more important than misclassification of majority instances.
+
+Here we will take the help of the first solution with the Synthetic Minority Oversampling Technique(SMOTE)
+
+#### Synthetic Minority Oversampling Technique(SMOTE)
+ 
+ This is a statistical technique for increasing the number of cases in the dataset in a balanced way. The module work by generating new instances from existing minority cases that we supply as input. Simply, SMOTE synthesis new minority instances between existing minority instances. The more information about SMOTE can be found here [SMOTE](https://rikunert.com/SMOTE_explained)
+ 
+ The SMOTE() function of smotefamily takes two parameters: K and dup_size. K indicates the number of the closest neighbors considering for the synthesis and dup_size gives the number of times existing data points get reused for synthesis.
+ 
+```{r,echo=FALSE}
+set.seed(1234)
+n0 <- nrow(subset(credit_card,Class==0))
+n1 <- nrow(subset(credit_card,Class==1))
+r0 <- 0.9
+ntimes <- ((1 -r0) / r0) * (n0/n1) - 1
+
+set.seed(1234)
+smote_output <- SMOTE(X = credit_card[ , -c(1, 31)], target=credit_card$Class, K = 5, dup_size = ntimes)
+credit_smote <- smote_output$data
+colnames(credit_smote)[30] <- "Class"
+```
+
+So here we set the code to get non-fraudulent transaction data to be 60% of overall transaction and rest 40% to be fraud transactions. The table below shows the propotion of Both Column after SMOTE Transformation.
+```{r}
+smote <- prop.table(table(credit_smote$Class))
+knitr::kable(smote)
+```
+
+We can visualize the difference between the two data set before and after the SMOTE transformation as,
+
+```{r,fig.align="center", fig.width=8, fig.height=5,eval=T, message=F, warning=FALSE, fig.cap="Comparison of Data after and Before SMOTE"}
+library(ggplot2)
+library(gridExtra)
+c1 <- credit_card %>% 
+  ggplot(aes(V1,V2,color=Class)) +
+  geom_point() +
+        labs(caption = "credit_card data before SMOTE transformation")
+
+c2 <- credit_smote %>%
+  ggplot(aes(V1,V2,color=Class)) +
+  geom_point()+
+         labs(caption = "credit_card data after SMOTE transformation")
+
+
+grid.arrange(c1,c2, nrow=1)
+```
+ 
+Here we can see that there are more generated synthetic data in the neighborhood of the actual fraud transaction. The concentration of new data points around the original ones can be explained by the K value of 5.
+
+Here onwards we will use SMOTE generated data for the model training. So first we need to split the SMOTE data like the original data into test and train data set.
+```{r, echo= F, eval= T}
+set.seed(1234)
+test_index_smote <- createDataPartition(y=credit_smote$Class, p = 0.2, list = F)
+
+train_smote <- credit_smote[-test_index_smote,]
+test_smote <- credit_smote[test_index_smote,]
+```
+
+We will try the LDA model once again, now on the SMOTE data
+
+**1.LDA **
+
+```{r, echo= F, eval=T}
+lda_CM_smote
+```
+
+The Accuracy attained is 0.9764 which is very much lower than the Accuracy of dat before the Smote transformation. By Inspecting the Confusion Matrix we could see that there were 1489 wrong predictions from total of 56899 predictions. The accuracy achieved is not the best so we could try another models.
+
+**2. Logistic Regression**
+
+Logistic regression is used for modeling the outcome probability of a class such as a pass/fail, positive/negative, and in our case -fraud/not fraud. The theory of Logistic Regression is that instead of fitting a straight line or hyperplane, the logistic regression model uses the logistic function to squeeze the output of a linear equation between 0 and 1. 
+
+```{r, echo= FALSE, eval= T, warning=FALSE}
+glm_CM_Smote
+```
+The Confusion matrix shows the Accuracy of 0.9837 which implies a good prediction. There were only 134 wrong predicitons.
+
+**3.Decision Tree**
+
+Decision Tree is a classification machine learning Algorithm that partitions data into subsets. The partitioning process starts with a binary split and continues until no further splits can be made. Various branches of variable length are formed. The goal of a decision tree is to encapsulate the training data in the smallest possible tree. The rationale for minimizing the tree size is the logical rule that the simplest possible explanation for a set of phenomena is preferred over other explanations.
+
+Here we applied Decision Tree to the train Set and checked the accuracy of the model. The Decision Tree of this case is look like,
+
+```{r, echo= FALSE, eval=T, fig.cap= "Decision Tree"}
+
+rpart.plot(decision_tree)
+```
+
+
+
+The Confusion matrix is shown below:
+```{r}
+DT_Smote_CM
+```
+The Accurcy of this model is 0.9852. 
+
+**4.Random Forest**
+
+The Final method we are implementing is the Random Forest Method. The Random Forest Classifier is a set of decision trees from a randomly selected subset of the training set.  It aggregates the votes from different decision trees to decide the final class of the test object. Simply the Random Forest Algorithm combines the output of multiple (randomly created) Decision Trees to generate the final output.
+
+The confusion Matrix created useing Random Forest model is below:
+ 
+```{r, echo= F, eval= T}
+
+rf_CM_smote
+```
+
+The Accuracy of this model is  0.9988  which is  better than the decision tree model and there were only 76 wtong predictions. 
+So we can clearly see that The Random Forest gaves the best prediction.
+
+## Result
+
+This project aimed to classify the case of fraudulent in the dataset that contains credit card details about the European cardholder. On the very first exploration of data itself is clear that the data is highly imbalanced. The non-fraudulent cases are only  0.17% of the data. So we used Synthetic Minority Oversampling Technique(SMOTE) technique to balance the data by creating more fraudulent cases from given data. 
+
+To find the best algorithm which gives maximum accuracy of classification, we tried Logistic Regression,Linear Discriminant Analysis(LDA), Random Forest, and Decision Tree model on the dataset and estimated the accuracy of the models. The following table shows a comparison of the Accuracy of each model:
+```{r}
+Accuracies <- tibble(Model = c("LDA","Logistic Regression","Random Forest","Decision Tree"), Accuracy=c(0.9764,0.9837,0.9832,0.9988))
+
+knitr::kable(Accuracies)
+```
+
+From the table, it is obvious that the model Random Forest gives best accuracy. 
+
+## Conclusion:
+ 
+ This project intended to build a classification which classifies fraudulent case from non-fraudulent cases in credit card fraud detection. Since the number of credit card is expanding vigorously, the demand for a strong model which could detect two cases is increasing exceedingly. 
+ 
+ On this project, first, we balanced the imbalanced with SMOTE() and imployed various algorithm and estimated accuracy. By Comparing the accumulated Accuracies we found that the Random Forest model has a supreme accuracy of 99.88%. The model accurately predicts 63085 cases from a total of 63161 cases.  So it would be an relevant model for the exposure of fraudulent cases.
+ 
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
